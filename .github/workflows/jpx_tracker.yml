@@ -1,0 +1,41 @@
+name: JPX取引代金トラッカー
+
+on:
+  schedule:
+    # 16:10 JST = 07:10 UTC（平日のみ）
+    - cron: "10 7 * * 1-5"
+  workflow_dispatch:  # 手動実行も可能
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: リポジトリをチェックアウト
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: 依存パッケージをインストール
+        run: pip install -r requirements.txt
+
+      - name: JPXデータを取得してExcelに記録
+        run: python jpx_scraper.py
+
+      - name: 変更があればコミット＆プッシュ
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add jpx_trading_value.xlsx
+          if git diff --cached --quiet; then
+            echo "変更なし（スキップ）"
+          else
+            git commit -m "📊 $(date +'%Y-%m-%d') 取引代金更新"
+            git push
+          fi

@@ -1,26 +1,45 @@
 """
 JPX 後場 取引代金概算 トラッカー
-毎日16:10以降に実行し、プライム・スタンダード・グロース市場の取引代金をExcelに記録する
+毎日16:10以降に実行し、プライム・スタンダード・グロース市場の取引代金をGoogleスプレッドシートに記録する
 """
 
 import sys
 import io
+import os
 import re
+import json
 import requests
 import pdfplumber
-import openpyxl
-from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+import gspread
+from google.oauth2.service_account import Credentials
 from datetime import datetime, date
-from pathlib import Path
 
 # ---- 設定 ----
-EXCEL_PATH = Path(__file__).parent / "jpx_trading_value.xlsx"
+SPREADSHEET_ID = "1_9Av480JcBfne-s2un62v0eddXnbJAlmNEo6Ou7SNZs"
+SHEET_NAME = "シート3"
 BASE_URL = "https://www.jpx.co.jp/markets/equities/volume-and-value/tvdivq000000derc-att"
 
-# PDFのワードリストの中でプライム市場の名前が出る2回目以降が取引代金セクション
 PRIME_LABEL    = "内国株式・プライム市場"
 STANDARD_LABEL = "内国株式・スタンダード市場"
 GROWTH_LABEL   = "内国株式・グロース市場"
+
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+HEADERS = ["日付", "プライム市場（百万円）", "スタンダード市場（百万円）", "グロース市場（百万円）"]
+
+
+def get_sheet() -> gspread.Worksheet:
+    """サービスアカウント認証してシートを返す"""
+    creds_json = os.environ.get("GOOGLE_CREDENTIALS")
+    if not creds_json:
+        # ローカル実行時はJSONファイルから読む
+        creds_path = os.path.join(os.path.dirname(__file__), "credentials.json")
+        with open(creds_path) as f:
+            creds_json = f.read()
+
+    creds_info = json.loads(creds_json)
+    creds = Credentials.from_service_account_info(creds_info, scopes=SCOPES)
+    gc = gspread.authorize(creds)
+    return gc.open_by_key(SPREADSHEET_ID).worksheet(SHEET_NAME)
 
 
 def download_pdf(target_date: date) -> bytes:
@@ -30,7 +49,6 @@ def download_pdf(target_date: date) -> bytes:
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     resp = requests.get(url, headers=headers, timeout=30)
     if resp.status_code == 404:
-        # 祝日・市場休場日はPDFが存在しない → スキップ扱い（exit 0）
         print(f"[SKIP] PDFが存在しません（祝日・休場日の可能性）: {url}")
         sys.exit(0)
     if resp.status_code != 200:
@@ -46,8 +64,6 @@ def extract_trading_values(pdf_bytes: bytes) -> dict:
     with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
         words = pdf.pages[0].extract_words()
 
-    # ワードリストから (text, y座標) を対応付け
-    # プライム市場名が2回目に出現する行のy座標を取引代金セクションとして使う
     prime_ys = [w["top"] for w in words if w["text"] == PRIME_LABEL]
     # 市場名は3回出現（メインテーブル・売買高概算・取引代金概算）
     if len(prime_ys) < 3:
@@ -59,12 +75,10 @@ def extract_trading_values(pdf_bytes: bytes) -> dict:
         (STANDARD_LABEL, "standard"),
         (GROWTH_LABEL,   "growth"),
     ]:
-        # 3回目の出現位置が取引代金概算セクション
         occurrences = [i for i, w in enumerate(words) if w["text"] == label_text]
         if len(occurrences) < 3:
             raise ValueError(f"ラベルが3回見つかりません: {label_text}")
         idx = occurrences[2]
-        # そのラベルの直後にある数値ワードを取得
         y = words[idx]["top"]
         num_word = next(
             (w for w in words[idx+1:] if abs(w["top"] - y) < 3 and re.match(r"[\d,]+$", w["text"])),
@@ -77,104 +91,39 @@ def extract_trading_values(pdf_bytes: bytes) -> dict:
     return values
 
 
-def load_or_create_workbook():
-    """Excelファイルを開くか新規作成する"""
-    if EXCEL_PATH.exists():
-        wb = openpyxl.load_workbook(EXCEL_PATH)
-        ws = wb.active
-    else:
-        wb = openpyxl.Workbook()
-        ws = wb.active
-        ws.title = "取引代金概算"
-        # ヘッダー行
-        headers = ["日付", "プライム市場\n（百万円）", "スタンダード市場\n（百万円）", "グロース市場\n（百万円）"]
-        for col, h in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col, value=h)
-            cell.font = Font(bold=True, color="FFFFFF")
-            cell.fill = PatternFill("solid", fgColor="1F4E79")
-            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        ws.row_dimensions[1].height = 36
-        ws.column_dimensions["A"].width = 14
-        ws.column_dimensions["B"].width = 20
-        ws.column_dimensions["C"].width = 22
-        ws.column_dimensions["D"].width = 18
-    return wb, ws
+def write_to_sheet(ws: gspread.Worksheet, target_date: date, values: dict):
+    """スプレッドシートに書き込む"""
+    all_values = ws.get_all_values()
 
+    # ヘッダーがなければ追加
+    if not all_values or all_values[0] != HEADERS:
+        ws.insert_row(HEADERS, 1)
+        all_values = ws.get_all_values()
 
-def find_last_row(ws):
-    """データが入っている最終行を返す（ヘッダー除く）"""
-    last = ws.max_row
-    while last > 1 and ws.cell(row=last, column=1).value is None:
-        last -= 1
-    return last
+    date_str = target_date.strftime("%Y/%m/%d")
+    new_row = [date_str, values["prime"], values["standard"], values["growth"]]
 
+    # 同日付が既存なら上書き
+    for i, row in enumerate(all_values[1:], start=2):
+        if row and row[0] == date_str:
+            ws.update(f"A{i}:D{i}", [new_row])
+            print(f"[UPDATE] {date_str} を上書きしました: プライム={values['prime']:,} / スタンダード={values['standard']:,} / グロース={values['growth']:,}")
+            return
 
-def write_to_excel(target_date: date, values: dict):
-    """
-    Excelに1行書き込む。
-    月が変わった場合は空行を1行挿入してから書く。
-    同日付のデータが既にある場合は上書きする。
-    """
-    wb, ws = load_or_create_workbook()
-    last_row = find_last_row(ws)
+    # 月替わりチェック: 最終データ行と月が違えば空行を挿入
+    data_rows = [r for r in all_values[1:] if r and r[0]]
+    if data_rows:
+        last_date_str = data_rows[-1][0]
+        try:
+            last_month = datetime.strptime(last_date_str, "%Y/%m/%d").month
+            if last_month != target_date.month:
+                # 空行を追加
+                ws.append_row([])
+        except ValueError:
+            pass
 
-    # 同日付が既に存在するか確認
-    for row in range(2, last_row + 1):
-        cell_val = ws.cell(row=row, column=1).value
-        if isinstance(cell_val, (date, datetime)):
-            existing_date = cell_val.date() if isinstance(cell_val, datetime) else cell_val
-            if existing_date == target_date:
-                # 上書き
-                _write_row(ws, row, target_date, values)
-                wb.save(EXCEL_PATH)
-                print(f"[UPDATE] {target_date} のデータを上書きしました")
-                return
-
-    # 新規行
-    new_row = last_row + 1
-
-    # 月替わりチェック: 前行（空行以外）と月が異なれば空行挿入
-    if last_row >= 2:
-        prev_val = ws.cell(row=last_row, column=1).value
-        if prev_val is not None:
-            prev_date = prev_val.date() if isinstance(prev_val, datetime) else prev_val
-            if prev_date.month != target_date.month:
-                new_row = last_row + 2  # 空行を1行分空ける
-
-    _write_row(ws, new_row, target_date, values)
-
-    # 交互背景色
-    fill_color = "D6E4F0" if (new_row % 2 == 0) else "FFFFFF"
-    for col in range(1, 5):
-        ws.cell(row=new_row, column=col).fill = PatternFill("solid", fgColor=fill_color)
-
-    wb.save(EXCEL_PATH)
-    print(f"[OK] {target_date} のデータを記録: プライム={values['prime']:,} / スタンダード={values['standard']:,} / グロース={values['growth']:,} （百万円）")
-
-
-THIN_BORDER = Border(
-    left=Side(style="thin"),
-    right=Side(style="thin"),
-    top=Side(style="thin"),
-    bottom=Side(style="thin"),
-)
-
-
-def _write_row(ws, row: int, target_date: date, values: dict):
-    """指定行にデータを書き込む"""
-    cells = [
-        ws.cell(row=row, column=1, value=target_date),
-        ws.cell(row=row, column=2, value=values["prime"]),
-        ws.cell(row=row, column=3, value=values["standard"]),
-        ws.cell(row=row, column=4, value=values["growth"]),
-    ]
-    cells[0].number_format = "YYYY/MM/DD"
-    cells[0].alignment = Alignment(horizontal="center")
-    for c in cells[1:]:
-        c.number_format = "#,##0"
-        c.alignment = Alignment(horizontal="right")
-    for c in cells:
-        c.border = THIN_BORDER
+    ws.append_row(new_row)
+    print(f"[OK] {date_str} を記録: プライム={values['prime']:,} / スタンダード={values['standard']:,} / グロース={values['growth']:,} （百万円）")
 
 
 def main(target_date: date = None):
@@ -185,14 +134,14 @@ def main(target_date: date = None):
     try:
         pdf_bytes = download_pdf(target_date)
         values = extract_trading_values(pdf_bytes)
-        write_to_excel(target_date, values)
+        ws = get_sheet()
+        write_to_sheet(ws, target_date, values)
     except Exception as e:
         print(f"[ERROR] {e}", file=sys.stderr)
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    # コマンドライン引数で日付を指定可能: python jpx_scraper.py 20260312
     if len(sys.argv) > 1:
         d = datetime.strptime(sys.argv[1], "%Y%m%d").date()
     else:

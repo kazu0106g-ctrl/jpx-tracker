@@ -13,8 +13,6 @@ jobs:
     steps:
       - name: リポジトリをチェックアウト
         uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Python セットアップ
         uses: actions/setup-python@v5
@@ -25,17 +23,7 @@ jobs:
       - name: 依存パッケージをインストール
         run: pip install -r requirements.txt
 
-      - name: JPXデータを取得してExcelに記録
+      - name: JPXデータを取得してスプレッドシートに記録
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         run: python jpx_scraper.py
-
-      - name: 変更があればコミット＆プッシュ
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add jpx_trading_value.xlsx
-          if git diff --cached --quiet; then
-            echo "変更なし（スキップ）"
-          else
-            git commit -m "📊 $(date +'%Y-%m-%d') 取引代金更新"
-            git push
-          fi

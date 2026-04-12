@@ -110,14 +110,13 @@ def write_to_sheet(ws: gspread.Worksheet, target_date: date, values: dict):
             print(f"[UPDATE] {date_str} を上書きしました: プライム={values['prime']:,} / スタンダード={values['standard']:,} / グロース={values['growth']:,}")
             return
 
-    # 月替わりチェック: 最終データ行と月が違えば空行を挿入
+    # 年替わりチェック: 最終データ行と年が違えば空行を挿入
     data_rows = [r for r in all_values[1:] if r and r[0]]
     if data_rows:
         last_date_str = data_rows[-1][0]
         try:
-            last_month = datetime.strptime(last_date_str, "%Y/%m/%d").month
-            if last_month != target_date.month:
-                # 空行を追加
+            last_year = datetime.strptime(last_date_str, "%Y/%m/%d").year
+            if last_year != target_date.year:
                 ws.append_row([])
         except ValueError:
             pass

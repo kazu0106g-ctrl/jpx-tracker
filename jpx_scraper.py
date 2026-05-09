@@ -26,6 +26,30 @@ GROWTH_LABEL   = "内国株式・グロース市場"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 HEADERS = ["日付", "プライム市場（百万円）", "スタンダード市場（百万円）", "グロース市場（百万円）"]
 
+# 年ごとに横方向に並べる列レイアウト
+# 各年: 4データ列 + 1空列セパレータ = 5列
+# 例) 2023=A-D, 空=E, 2024=F-I, 空=J, 2025=K-N, 空=O, 2026=P-S, ...
+COLS_PER_YEAR = 5
+BASE_YEAR = 2023  # 最初の年。これを起点に列位置を計算
+HEADER_LABEL_ROW = 1   # Row 1: 年ラベル ("2023年")
+HEADER_COLS_ROW = 2    # Row 2: 列ヘッダー (日付/プライム/...)
+DATA_START_ROW = 3     # Row 3〜: 日次データ
+
+
+def col_letter(n: int) -> str:
+    """1=A, 2=B, ... 27=AA, ..."""
+    s = ""
+    while n > 0:
+        m = (n - 1) % 26
+        s = chr(65 + m) + s
+        n = (n - 1) // 26
+    return s
+
+
+def year_start_col(year: int) -> int:
+    """対象年の開始列番号 (1-based)"""
+    return (year - BASE_YEAR) * COLS_PER_YEAR + 1
+
 
 def get_sheet() -> gspread.Worksheet:
     """サービスアカウント認証してシートを返す"""
@@ -92,37 +116,57 @@ def extract_trading_values(pdf_bytes: bytes) -> dict:
 
 
 def write_to_sheet(ws: gspread.Worksheet, target_date: date, values: dict):
-    """スプレッドシートに書き込む"""
-    all_values = ws.get_all_values()
+    """スプレッドシートに書き込む (年ごと横方向レイアウト)
 
-    # ヘッダーがなければ追加
-    if not all_values or all_values[0] != HEADERS:
-        ws.insert_row(HEADERS, 1)
-        all_values = ws.get_all_values()
-
+    Layout:
+      Row 1: 年ラベル ("2023年", "2024年", ...)
+      Row 2: 列ヘッダー (日付, プライム, スタンダード, グロース)
+      Row 3〜: 日次データ
+      列方向: 各年が5列ブロック (4データ列 + 1空列セパレータ)
+    """
+    year = target_date.year
+    start_col = year_start_col(year)
+    end_col = start_col + 3  # データ4列の最終列
     date_str = target_date.strftime("%Y/%m/%d")
     new_row = [date_str, values["prime"], values["standard"], values["growth"]]
 
-    # 同日付が既存なら上書き
-    for i, row in enumerate(all_values[1:], start=2):
-        if row and row[0] == date_str:
-            ws.update(f"A{i}:D{i}", [new_row])
-            print(f"[UPDATE] {date_str} を上書きしました: プライム={values['prime']:,} / スタンダード={values['standard']:,} / グロース={values['growth']:,}")
+    # 1. その年のヘッダー (Row 1, 2) が無ければ作成
+    label_cell = ws.cell(HEADER_LABEL_ROW, start_col).value
+    if not label_cell or str(label_cell).strip() != f"{year}年":
+        ws.update_cell(HEADER_LABEL_ROW, start_col, f"{year}年")
+        print(f"[INIT] 年ラベル {year}年 を {col_letter(start_col)}{HEADER_LABEL_ROW} に書き込み")
+    header_cells = ws.range(HEADER_COLS_ROW, start_col, HEADER_COLS_ROW, end_col)
+    if [c.value for c in header_cells] != HEADERS:
+        ws.update(
+            f"{col_letter(start_col)}{HEADER_COLS_ROW}:{col_letter(end_col)}{HEADER_COLS_ROW}",
+            [HEADERS],
+        )
+        print(f"[INIT] 列ヘッダー を {col_letter(start_col)}{HEADER_COLS_ROW}〜{col_letter(end_col)}{HEADER_COLS_ROW} に書き込み")
+
+    # 2. その年の列ブロックの日付列 (start_col) を読み出し
+    last_row_used = ws.row_count
+    date_col_values = ws.col_values(start_col)  # 1-based全行 (空セルは末尾trim)
+    # date_col_values[0] = Row 1 の値 (年ラベル), [1] = Row 2 (日付ヘッダー), [2..] = Row 3〜のデータ
+
+    # 同日付があれば上書き
+    for idx, dv in enumerate(date_col_values[DATA_START_ROW - 1:], start=DATA_START_ROW):
+        if str(dv).strip() == date_str:
+            ws.update(
+                f"{col_letter(start_col)}{idx}:{col_letter(end_col)}{idx}",
+                [new_row],
+            )
+            print(f"[UPDATE] {date_str} を上書き: プライム={values['prime']:,} / スタンダード={values['standard']:,} / グロース={values['growth']:,}")
             return
 
-    # 年替わりチェック: 最終データ行と年が違えば空行を挿入
-    data_rows = [r for r in all_values[1:] if r and r[0]]
-    if data_rows:
-        last_date_str = data_rows[-1][0]
-        try:
-            last_year = datetime.strptime(last_date_str, "%Y/%m/%d").year
-            if last_year != target_date.year:
-                ws.append_row([])
-        except ValueError:
-            pass
+    # 3. 追記先 = その年のデータ列の最初の空行
+    # date_col_values の長さがデータ末尾を示す (gspreadは末尾の空セルをtrim)
+    next_row = max(DATA_START_ROW, len(date_col_values) + 1)
 
-    ws.append_row(new_row)
-    print(f"[OK] {date_str} を記録: プライム={values['prime']:,} / スタンダード={values['standard']:,} / グロース={values['growth']:,} （百万円）")
+    ws.update(
+        f"{col_letter(start_col)}{next_row}:{col_letter(end_col)}{next_row}",
+        [new_row],
+    )
+    print(f"[OK] {date_str} を記録: {col_letter(start_col)}-{col_letter(end_col)}{next_row} / プライム={values['prime']:,} / スタンダード={values['standard']:,} / グロース={values['growth']:,} （百万円）")
 
 
 def main(target_date: date = None):

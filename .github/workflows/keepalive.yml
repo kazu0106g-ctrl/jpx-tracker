@@ -1,0 +1,35 @@
+name: Keep Alive
+
+# GitHub Actions の仕様で、default branch に 60日間 commit がないと
+# scheduled workflow が自動的に disabled_inactivity になる。
+# これを防ぐため毎月 1 回 自動 commit を入れる。
+
+on:
+  schedule:
+    - cron: "15 0 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Bump timestamp file
+        run: |
+          mkdir -p .keepalive
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > .keepalive/last_run.txt
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .keepalive/last_run.txt
+          if git diff --cached --quiet; then
+            echo "no changes"
+          else
+            git commit -m "chore: keep-alive bump"
+            git push
+          fi

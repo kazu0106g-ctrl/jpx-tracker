@@ -1,0 +1,32 @@
+name: JPX 欠損日チェック & 自動補完
+
+# GitHub Actions の cron は混雑時に頻繁にスキップされるため、
+# 毎日 1 回過去 7 平日分を確認して欠損があれば自動補完する。
+
+on:
+  schedule:
+    # 毎日 02:00 UTC (11:00 JST) — 平日の朝、前日の cron 失敗を回復するタイミング
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Python セットアップ
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: 依存パッケージ
+        run: pip install -r requirements.txt
+
+      - name: 欠損日チェック & 自動補完
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+        run: python backfill_recent.py

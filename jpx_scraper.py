@@ -138,8 +138,8 @@ def write_to_sheet(ws: gspread.Worksheet, target_date: date, values: dict):
     header_cells = ws.range(HEADER_COLS_ROW, start_col, HEADER_COLS_ROW, end_col)
     if [c.value for c in header_cells] != HEADERS:
         ws.update(
-            f"{col_letter(start_col)}{HEADER_COLS_ROW}:{col_letter(end_col)}{HEADER_COLS_ROW}",
-            [HEADERS],
+            values=[HEADERS],
+            range_name=f"{col_letter(start_col)}{HEADER_COLS_ROW}:{col_letter(end_col)}{HEADER_COLS_ROW}",
         )
         print(f"[INIT] 列ヘッダー を {col_letter(start_col)}{HEADER_COLS_ROW}〜{col_letter(end_col)}{HEADER_COLS_ROW} に書き込み")
 
@@ -152,8 +152,8 @@ def write_to_sheet(ws: gspread.Worksheet, target_date: date, values: dict):
     for idx, dv in enumerate(date_col_values[DATA_START_ROW - 1:], start=DATA_START_ROW):
         if str(dv).strip() == date_str:
             ws.update(
-                f"{col_letter(start_col)}{idx}:{col_letter(end_col)}{idx}",
-                [new_row],
+                values=[new_row],
+                range_name=f"{col_letter(start_col)}{idx}:{col_letter(end_col)}{idx}",
             )
             print(f"[UPDATE] {date_str} を上書き: プライム={values['prime']:,} / スタンダード={values['standard']:,} / グロース={values['growth']:,}")
             return
@@ -163,8 +163,8 @@ def write_to_sheet(ws: gspread.Worksheet, target_date: date, values: dict):
     next_row = max(DATA_START_ROW, len(date_col_values) + 1)
 
     ws.update(
-        f"{col_letter(start_col)}{next_row}:{col_letter(end_col)}{next_row}",
-        [new_row],
+        values=[new_row],
+        range_name=f"{col_letter(start_col)}{next_row}:{col_letter(end_col)}{next_row}",
     )
     print(f"[OK] {date_str} を記録: {col_letter(start_col)}-{col_letter(end_col)}{next_row} / プライム={values['prime']:,} / スタンダード={values['standard']:,} / グロース={values['growth']:,} （百万円）")
 
